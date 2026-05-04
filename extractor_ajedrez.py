@@ -28,7 +28,7 @@ from urllib.parse import quote
 import requests
 
 
-USER_AGENT = "AjedrezDataExtractor/1.0 (+local research use)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 
 @dataclass
@@ -63,14 +63,22 @@ class BaseClient:
         self.timeout = timeout
 
     def get_json(self, url: str) -> Dict:
-        resp = self.session.get(url, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching {url}: {e}")
+            return {}
 
     def get_text(self, url: str) -> str:
-        resp = self.session.get(url, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.text
+        try:
+            resp = self.session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.text
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching {url}: {e}")
+            return ""
 
 
 class LichessOpeningExplorerExtractor(BaseClient):
@@ -79,6 +87,9 @@ class LichessOpeningExplorerExtractor(BaseClient):
     def fetch(self, fen: str, moves: int = 12) -> List[Record]:
         url = f"{self.BASE_URL}?variant=standard&fen={quote(fen)}&moves={moves}&topGames=0&recentGames=0"
         data = self.get_json(url)
+        if not data:
+            print(f"Lichess Opening Explorer unavailable for FEN: {fen}")
+            return []
         rec = Record(
             source="lichess_opening_explorer",
             doc_id=f"lichess_explorer::{fen}",
@@ -97,6 +108,9 @@ class LichessTablebaseExtractor(BaseClient):
     def fetch(self, fen: str) -> List[Record]:
         url = f"{self.BASE_URL}?fen={quote(fen)}"
         data = self.get_json(url)
+        if not data:
+            print(f"Lichess Tablebase unavailable for FEN: {fen}")
+            return []
         rec = Record(
             source="lichess_tablebase",
             doc_id=f"lichess_tb::{fen}",
@@ -144,6 +158,9 @@ class ChessComExtractor(BaseClient):
 
     def fetch_rss(self) -> List[Record]:
         raw = self.get_text(self.RSS_URL)
+        if not raw:
+            print("Chess.com RSS unavailable")
+            return []
         return [
             Record(
                 source="chesscom_rss",
@@ -187,17 +204,20 @@ class LichessStudiesExtractor(BaseClient):
         for study_id in study_ids:
             url = f"https://lichess.org/study/{study_id}.ndjson"
             raw = self.get_text(url)
-            records.append(
-                Record(
-                    source="lichess_study",
-                    doc_id=f"study::{study_id}",
-                    title=f"Lichess Study {study_id}",
-                    url=url,
-                    language="es",
-                    fetched_at=_now_iso(),
-                    payload={"ndjson": raw},
+            if raw:
+                records.append(
+                    Record(
+                        source="lichess_study",
+                        doc_id=f"study::{study_id}",
+                        title=f"Lichess Study {study_id}",
+                        url=url,
+                        language="es",
+                        fetched_at=_now_iso(),
+                        payload={"ndjson": raw},
+                    )
                 )
-            )
+            else:
+                print(f"Could not fetch Lichess study: {study_id}")
             time.sleep(0.4)
         return records
 
