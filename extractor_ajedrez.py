@@ -3,11 +3,11 @@
 Extractor unificado de datos de ajedrez para chatbot.
 
 Fuentes soportadas:
+- Lichess Cloud Evaluation API
+- Lichess Games (públicas)
 - Lichess Studies API
-- Lichess Opening Explorer
 - Wikipedia (ajedrez)
 - ECO openings (desde archivo local)
-- Tablebase (Lichess tablebase)
 - Chess.com estudios/artículos (RSS público)
 
 Salida:
@@ -81,46 +81,57 @@ class BaseClient:
             return ""
 
 
-class LichessOpeningExplorerExtractor(BaseClient):
-    BASE_URL = "https://explorer.lichess.ovh/lichess"
-
-    def fetch(self, fen: str, moves: int = 12) -> List[Record]:
-        url = f"{self.BASE_URL}?variant=standard&fen={quote(fen)}&moves={moves}&topGames=0&recentGames=0"
-        data = self.get_json(url)
-        if not data:
-            print(f"Lichess Opening Explorer unavailable for FEN: {fen}")
-            return []
-        rec = Record(
-            source="lichess_opening_explorer",
-            doc_id=f"lichess_explorer::{fen}",
-            title="Lichess Opening Explorer",
-            url=url,
-            language="es",
-            fetched_at=_now_iso(),
-            payload=data,
-        )
-        return [rec]
-
-
-class LichessTablebaseExtractor(BaseClient):
-    BASE_URL = "https://tablebase.lichess.ovh/standard"
+class LichessCloudEvalExtractor(BaseClient):
+    """Fetch cloud evaluation from Lichess for chess positions."""
 
     def fetch(self, fen: str) -> List[Record]:
-        url = f"{self.BASE_URL}?fen={quote(fen)}"
+        url = f"https://lichess.org/api/cloud-eval?fen={quote(fen)}"
         data = self.get_json(url)
         if not data:
-            print(f"Lichess Tablebase unavailable for FEN: {fen}")
+            print(f"Lichess Cloud Eval unavailable for FEN: {fen}")
             return []
         rec = Record(
-            source="lichess_tablebase",
-            doc_id=f"lichess_tb::{fen}",
-            title="Lichess Tablebase",
+            source="lichess_cloud_eval",
+            doc_id=f"lichess_eval::{fen}",
+            title="Lichess Cloud Evaluation",
             url=url,
             language="es",
             fetched_at=_now_iso(),
             payload=data,
         )
         return [rec]
+
+
+class LichessGamesExtractor(BaseClient):
+    """Fetch public games from Lichess users."""
+
+    def fetch(self, username: str, max_games: int = 5) -> List[Record]:
+        url = f"https://lichess.org/api/games/user/{username}"
+        text = self.get_text(url)
+        if not text:
+            print(f"Lichess games unavailable for user: {username}")
+            return []
+        
+        records: List[Record] = []
+        lines = text.strip().split('\n')
+        
+        for i, line in enumerate(lines[:max_games]):
+            try:
+                records.append(
+                    Record(
+                        source="lichess_games",
+                        doc_id=f"lichess_game::{username}::{i}",
+                        title=f"Lichess Game {i+1}",
+                        url=url,
+                        language="es",
+                        fetched_at=_now_iso(),
+                        payload={"pgn": line},
+                    )
+                )
+            except Exception as e:
+                print(f"Error processing game {i}: {e}")
+        
+        return records
 
 
 class WikipediaExtractor(BaseClient):
@@ -229,10 +240,10 @@ def _now_iso() -> str:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extractor de fuentes de ajedrez a JSONL")
     p.add_argument("--output", default="data/chess_corpus.jsonl", help="Ruta de salida JSONL")
-    p.add_argument("--fen-opening", default="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-    p.add_argument("--fen-tablebase", default="8/8/8/8/8/8/7k/7K w - - 0 1")
+    p.add_argument("--fen", default="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR")
     p.add_argument("--wiki-titles", nargs="*", default=["Ajedrez", "Apertura (ajedrez)", "Final (ajedrez)"])
     p.add_argument("--eco-file", default="", help="Archivo local ECO opcional")
+    p.add_argument("--lichess-username", default="Stockfish", help="Usuario de Lichess para descargar partidas")
     p.add_argument("--study-ids", nargs="*", default=[], help="IDs de estudios públicos de Lichess")
     p.add_argument("--include-chesscom", action="store_true")
     return p.parse_args()
@@ -244,16 +255,24 @@ def main() -> None:
 
     records: List[Record] = []
 
-    records.extend(LichessOpeningExplorerExtractor().fetch(args.fen_opening))
-    records.extend(LichessTablebaseExtractor().fetch(args.fen_tablebase))
+    # Lichess Cloud Evaluation
+    records.extend(LichessCloudEvalExtractor().fetch(args.fen))
+    
+    # Lichess Games from user
+    records.extend(LichessGamesExtractor().fetch(args.lichess_username, max_games=5))
+    
+    # Wikipedia
     records.extend(WikipediaExtractor().fetch_pages(args.wiki_titles))
 
+    # Lichess Studies (if provided)
     if args.study_ids:
         records.extend(LichessStudiesExtractor().fetch(args.study_ids))
 
+    # ECO file (if provided)
     if args.eco_file:
         records.extend(ECOFileExtractor().fetch(Path(args.eco_file)))
 
+    # Chess.com RSS (if requested)
     if args.include_chesscom:
         records.extend(ChessComExtractor().fetch_rss())
 
